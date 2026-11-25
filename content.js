@@ -15,43 +15,36 @@
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = [
-      "[data-allegro-przecena]{outline:2px solid #ff5a00;outline-offset:-2px;}",
-    ].join("");
+    style.textContent = "[data-allegro-przecena]{box-shadow:inset 0 0 0 2px #ff5a00;}";
     (document.head || document.documentElement).appendChild(style);
   }
 
   function offerLinks(root) {
-    return root.querySelectorAll('a[href*="/oferta/"], a[href*="/produkt/"]');
+    return root.querySelectorAll('a[href*="/oferta/"], a[href*="/produkt/"], a[href*="allegro.pl/oferta"], a[href*="allegro.pl/produkt"]');
   }
 
-  function isReasonableCard(el) {
+  function isCardSized(el) {
     if (!el || el === document.body || el === document.documentElement) return false;
     const box = el.getBoundingClientRect();
-    if (box.width < 90 || box.height < 50) return false;
-    if (box.width > window.innerWidth * 0.92 && box.height > window.innerHeight * 0.45) return false;
-    if (box.height > 900) return false;
+    if (box.width < 100 || box.height < 60) return false;
+    if (box.height > 760) return false;
+    if (box.width > window.innerWidth * 0.96) return false;
+    if (box.width > window.innerWidth * 0.8 && box.height > window.innerHeight * 0.35) return false;
     return true;
   }
 
   function cardFromLink(anchor) {
     let node = anchor;
-    for (let depth = 0; depth < 8 && node.parentElement; depth += 1) {
+    for (let depth = 0; depth < 10 && node.parentElement; depth += 1) {
       const parent = node.parentElement;
-      const links = offerLinks(parent);
-      if (links.length > 1) {
-        if (offerLinks(node).length <= 2 && isReasonableCard(node)) return node;
-        return null;
+      if (offerLinks(parent).length > 1) {
+        if (offerLinks(node).length > 2) return null;
+        if (!isCardSized(node)) return null;
+        return node;
       }
       node = parent;
     }
-    const article = anchor.closest("article");
-    if (article && offerLinks(article).length <= 2 && isReasonableCard(article)) return article;
     return null;
-  }
-
-  function cardText(card) {
-    return card.innerText || "";
   }
 
   function collectCards() {
@@ -60,11 +53,26 @@
     offerLinks(document).forEach((anchor) => {
       const card = cardFromLink(anchor);
       if (!card || seen.has(card)) return;
-      if (!/zł/i.test(cardText(card))) return;
+      if (!/zł/i.test(card.innerText || "")) return;
       seen.add(card);
       cards.push(card);
     });
     return cards.filter((card) => !cards.some((other) => other !== card && card.contains(other)));
+  }
+
+  function clearMarks() {
+    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
+      card.removeAttribute("data-allegro-przecena");
+    });
+    document.querySelectorAll("[data-allegro-order]").forEach((item) => {
+      item.style.removeProperty("order");
+      item.removeAttribute("data-allegro-order");
+    });
+  }
+
+  function mark(card, percent) {
+    if (percent > 0) card.setAttribute("data-allegro-przecena", "−" + percent + "%");
+    else card.removeAttribute("data-allegro-przecena");
   }
 
   function gridItem(card) {
@@ -72,22 +80,47 @@
     while (node.parentElement && node !== document.body) {
       const display = getComputedStyle(node.parentElement).display || "";
       if (display.indexOf("flex") !== -1 || display.indexOf("grid") !== -1) {
-        if (!isReasonableCard(node) && node !== card) return null;
-        return { parent: node.parentElement, item: node };
+        const box = node.getBoundingClientRect();
+        const huge = box.width > window.innerWidth * 0.9 && box.height > window.innerHeight * 0.4;
+        if (huge || box.height > 900) return null;
+        return node;
       }
       node = node.parentElement;
     }
-    return null;
+    return card.parentElement ? card : null;
   }
 
-  function clearOrder() {
-    document.querySelectorAll("[data-allegro-order]").forEach((item) => {
-      item.style.removeProperty("order");
-      item.removeAttribute("data-allegro-order");
+  function paintOrder(entries) {
+    entries.forEach((row, index) => {
+      const item = gridItem(row.card);
+      if (!item) return;
+      item.style.order = String(index + 1);
+      item.setAttribute("data-allegro-order", "1");
     });
-    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
-      card.removeAttribute("data-allegro-przecena");
-    });
+  }
+
+  function sortSiblings(cards) {
+    const parent = cards[0].parentElement;
+    if (!parent || cards.some((card) => card.parentElement !== parent)) return [];
+    const ranked = cards
+      .map((card, index) => ({
+        card: card,
+        index: index,
+        percent: filter.discountFromText(card.innerText || ""),
+      }))
+      .sort((a, b) => b.percent - a.percent || a.index - b.index);
+    const same = ranked.every((row, index) => row.card === cards[index]);
+    if (!same) {
+      const markers = cards.map((card) => {
+        const marker = document.createComment("przecena");
+        card.replaceWith(marker);
+        return marker;
+      });
+      ranked.forEach((row, index) => markers[index].replaceWith(row.card));
+    }
+    ranked.forEach((row) => mark(row.card, row.percent));
+    paintOrder(ranked);
+    return ranked;
   }
 
   function publish(summary) {
@@ -109,37 +142,25 @@
     try {
       injectStyle();
       if (!enabled) {
-        clearOrder();
+        clearMarks();
         return publish({ enabled: false, total: 0, marked: 0, max: 0 });
       }
-      const cards = collectCards();
       const groups = new Map();
-      cards.forEach((card) => {
-        const placed = gridItem(card);
-        if (!placed) return;
-        if (!groups.has(placed.parent)) groups.set(placed.parent, []);
-        groups.get(placed.parent).push({ card: card, item: placed.item });
+      collectCards().forEach((card) => {
+        const parent = card.parentElement;
+        if (!parent) return;
+        if (!groups.has(parent)) groups.set(parent, []);
+        groups.get(parent).push(card);
       });
       let marked = 0;
       let max = 0;
       let total = 0;
-      groups.forEach((entries) => {
-        if (entries.length < 2) return;
-        const ranked = entries
-          .map((entry, index) => ({
-            entry: entry,
-            index: index,
-            percent: filter.discountFromText(cardText(entry.card)),
-          }))
-          .sort((a, b) => b.percent - a.percent || a.index - b.index);
-        ranked.forEach((row, index) => {
+      groups.forEach((cards) => {
+        if (cards.length < 2) return;
+        sortSiblings(cards).forEach((row) => {
           total += 1;
           if (row.percent > 0) marked += 1;
           if (row.percent > max) max = row.percent;
-          row.entry.item.style.order = String(index + 1);
-          row.entry.item.setAttribute("data-allegro-order", "1");
-          if (row.percent > 0) row.entry.card.setAttribute("data-allegro-przecena", "−" + row.percent + "%");
-          else row.entry.card.removeAttribute("data-allegro-przecena");
         });
       });
       return publish({ enabled: true, total: total, marked: marked, max: max });
@@ -150,7 +171,7 @@
 
   function schedule() {
     window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(apply, 250);
+    scanTimer = window.setTimeout(apply, 200);
   }
 
   chrome.storage.local.get({ enabled: true }, (data) => {
@@ -179,6 +200,9 @@
   function start() {
     injectStyle();
     observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.setInterval(() => {
+      if (enabled && !applying) apply();
+    }, 700);
     schedule();
   }
 
