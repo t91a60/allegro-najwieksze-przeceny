@@ -11,7 +11,7 @@
   }
 
   function parsePriceToken(whole, fraction) {
-    const digits = String(whole || "").replace(/[ \u00a0.]/g, "");
+    const digits = String(whole || "").replace(/[ \u00a0\u202f\u2009.]/g, "");
     if (!/^\d+$/.test(digits)) return null;
     const value = Number(digits) + (fraction ? Number(fraction) / 100 : 0);
     if (!Number.isFinite(value) || value < 1 || value > 1000000) return null;
@@ -19,13 +19,15 @@
   }
 
   function lineIsNoise(line) {
-    return /dostaw|przesyl|wysyl|z dostawa|raty|\/mc|\/mies|cashback|zwrot|kupon|klik|punkt|smart!?$|rrso|prowiz|oszczedz|w zestawie z dostawa/.test(
+    return /dostaw|przesyl|wysyl|z dostawa|raty|\/mc|\/mies|cashback|zwrot|kupon|klik|punkt|smart!?$|rrso|prowiz|oszczedz|poleca|opini/.test(
       fold(line),
     );
   }
 
   function normalize(text) {
-    return String(text || "").replace(/(\d[\d \u00a0]*(?:,\d{2})?)\s*\n+\s*zł/gi, "$1 zł");
+    return String(text || "")
+      .replace(/[-−–]\s*\n+\s*(\d{1,2})\s*%/g, "-$1%")
+      .replace(/(\d[\d \u00a0\u202f\u2009]*(?:,\d{2})?)\s*\n+\s*zł/gi, "$1 zł");
   }
 
   function discountFromText(text) {
@@ -41,7 +43,7 @@
       const folded = fold(line);
       const isCeiling = /\b(do|nawet|az|max|maksymalnie)\s+\d{1,2}\s*%/.test(folded);
       const badge = line.match(/[-−–]\s*(\d{1,2})\s*%/);
-      const spoken = folded.match(/obnizk\w*\s+(\d{1,2})\s*(?:%|procent)/);
+      const spoken = folded.match(/(?:obnizk\w*|okazja|przecen\w*|taniej\s+o)\s*[-−–]?\s*(\d{1,2})\s*(?:%|procent)/);
       if (!isCeiling && badge) {
         const value = Number(badge[1]);
         if (value >= 1 && value <= 90) percents.push(value);
@@ -54,7 +56,7 @@
       }
 
       if (isCeiling) return;
-      const priceRe = /(\d{1,3}(?:[ \u00a0]\d{3})+|\d{1,6})(?:,(\d{2}))?\s*zł/gi;
+      const priceRe = /(\d{1,3}(?:[ \u00a0\u202f\u2009]\d{3})+|\d{1,6})(?:,(\d{2}))?\s*zł/gi;
       let match = priceRe.exec(line);
       while (match) {
         const price = parsePriceToken(match[1], match[2]);

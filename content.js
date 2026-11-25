@@ -6,12 +6,12 @@
 
   const filter = globalThis.AllegroPrzecena;
   const STYLE_ID = "allegro-przecena-style";
+  const origin = new WeakMap();
   let enabled = true;
   let seq = 0;
-  let scanTimer = 0;
   let applying = false;
-  let dirty = false;
   let lastSummary = { enabled: true, total: 0, marked: 0, max: 0 };
+  let nextPass = 0;
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -33,12 +33,20 @@
 
   function cardFromLink(anchor) {
     let node = anchor;
-    for (let depth = 0; depth < 10 && node.parentElement; depth += 1) {
+    for (let depth = 0; depth < 12 && node.parentElement; depth += 1) {
       const parent = node.parentElement;
       if (offerLinks(parent).length > 1) return node;
       node = parent;
     }
     return anchor.closest("article") || anchor;
+  }
+
+  function cardText(card) {
+    const bits = [card.innerText || "", card.textContent || ""];
+    card.querySelectorAll("[aria-label], img[alt]").forEach((node) => {
+      bits.push(node.getAttribute("aria-label") || node.getAttribute("alt") || "");
+    });
+    return bits.join("\n");
   }
 
   function collectCards() {
@@ -47,68 +55,57 @@
     offerLinks(document).forEach((anchor) => {
       const card = cardFromLink(anchor);
       if (!card || seen.has(card) || card === document.body || card === document.documentElement) return;
-      const text = cardText(card);
-      if (!/zł/i.test(text)) return;
-      const box = card.getBoundingClientRect();
-      if (box.width < 80 || box.height < 40) return;
+      if (!/zł/i.test(cardText(card))) return;
+      if (card.offsetWidth === 0 && card.offsetHeight === 0) return;
       seen.add(card);
       cards.push(card);
     });
     return cards.filter((card) => !cards.some((other) => other !== card && card.contains(other)));
   }
 
-  function cardText(card) {
-    const bits = [card.innerText || ""];
-    card.querySelectorAll("[aria-label]").forEach((node) => {
-      bits.push(node.getAttribute("aria-label") || "");
-    });
-    return bits.join("\n");
-  }
-
-  function hostIn(parent, card) {
-    let node = card;
-    while (node.parentElement && node.parentElement !== parent) node = node.parentElement;
-    return node.parentElement === parent ? node : null;
-  }
-
-  function stamp(host) {
-    if (!host.dataset.allegroSeq) {
-      seq += 1;
-      host.dataset.allegroSeq = String(seq);
+  function depthOf(node) {
+    let depth = 0;
+    let current = node;
+    while (current && current.parentElement) {
+      depth += 1;
+      current = current.parentElement;
     }
-    return Number(host.dataset.allegroSeq);
+    return depth;
   }
 
-  function listingGroups(cards) {
-    const used = new Set();
-    const groups = [];
+  function feedRoot(cards) {
+    const counts = new Map();
     cards.forEach((card) => {
-      if (used.has(card)) return;
       let node = card.parentElement;
-      while (node && node !== document.body) {
-        const inside = cards.filter((candidate) => node.contains(candidate));
-        if (inside.length >= 2 && inside.every((candidate) => !used.has(candidate))) {
-          const hosts = [];
-          const seenHost = new Set();
-          let ok = true;
-          inside.forEach((candidate) => {
-            const host = hostIn(node, candidate);
-            if (!host || seenHost.has(host)) ok = false;
-            else {
-              seenHost.add(host);
-              hosts.push({ host: host, card: candidate });
-            }
-          });
-          if (ok && hosts.length >= 2) {
-            inside.forEach((candidate) => used.add(candidate));
-            groups.push({ hosts: hosts });
-            return;
-          }
-        }
+      while (node && node !== document.documentElement) {
+        counts.set(node, (counts.get(node) || 0) + 1);
         node = node.parentElement;
       }
     });
-    return groups;
+    let best = null;
+    let bestCount = 0;
+    let bestDepth = -1;
+    counts.forEach((count, node) => {
+      if (count < 2) return;
+      const depth = depthOf(node);
+      if (count > bestCount || (count === bestCount && depth > bestDepth)) {
+        best = node;
+        bestCount = count;
+        bestDepth = depth;
+      }
+    });
+    return best;
+  }
+
+  function remember(card) {
+    if (card.dataset.allegroSeq) return;
+    const parent = card.parentElement;
+    seq += 1;
+    card.dataset.allegroSeq = String(seq);
+    origin.set(card, {
+      parent: parent,
+      index: parent ? Array.prototype.indexOf.call(parent.children, card) : 0,
+    });
   }
 
   function mark(card, percent) {
@@ -116,56 +113,64 @@
     else card.removeAttribute("data-allegro-przecena");
   }
 
-  function reorder(current, desired) {
-    const same = desired.every((host, index) => host === current[index]);
-    if (same) return;
-    const slots = current.map((host) => {
-      const marker = document.createComment("przecena");
-      host.replaceWith(marker);
-      return marker;
-    });
-    desired.forEach((host, index) => slots[index].replaceWith(host));
-  }
-
-  function sortGroup(group) {
-    const ranked = group.hosts
-      .map((entry) => ({
-        host: entry.host,
-        card: entry.card,
-        seq: stamp(entry.host),
-        percent: filter.discountFromText(cardText(entry.card)),
-      }))
-      .sort((a, b) => b.percent - a.percent || a.seq - b.seq);
-    ranked.forEach((row) => mark(row.card, row.percent));
-    reorder(
-      group.hosts.map((entry) => entry.host),
-      ranked.map((row) => row.host),
-    );
-    return ranked;
-  }
-
-  function clearBadges() {
-    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
+  function clearPaint(cards) {
+    cards.forEach((card) => {
+      card.style.removeProperty("order");
       card.removeAttribute("data-allegro-przecena");
     });
-    document.querySelectorAll("[data-allegro-order-host]").forEach((host) => {
-      host.style.order = "";
-      host.removeAttribute("data-allegro-order-host");
+    document.querySelectorAll("[data-allegro-display-saved]").forEach((parent) => {
+      parent.style.removeProperty("display");
+      parent.style.removeProperty("flex-wrap");
+      parent.style.removeProperty("align-items");
+      if (parent.dataset.allegroDisplay) parent.style.display = parent.dataset.allegroDisplay;
+      delete parent.dataset.allegroDisplay;
+      delete parent.dataset.allegroDisplaySaved;
     });
   }
 
-  function restoreOrder() {
-    clearBadges();
-    const groups = new Map();
-    document.querySelectorAll("[data-allegro-seq]").forEach((host) => {
-      const parent = host.parentElement;
-      if (!parent) return;
-      if (!groups.has(parent)) groups.set(parent, []);
-      groups.get(parent).push(host);
+  function layoutParent(parent, cards) {
+    if (!parent) return;
+    const display = getComputedStyle(parent).display || "";
+    if (/flex|grid/.test(display)) return;
+    const kids = Array.prototype.filter.call(parent.children, (child) => cards.indexOf(child) !== -1);
+    if (kids.length < 2 || kids.length < parent.children.length * 0.4) return;
+    if (!parent.dataset.allegroDisplaySaved) {
+      parent.dataset.allegroDisplaySaved = "1";
+      parent.dataset.allegroDisplay = parent.style.display || "";
+    }
+    parent.style.setProperty("display", "flex", "important");
+    parent.style.setProperty("flex-wrap", "wrap", "important");
+    parent.style.setProperty("align-items", "stretch", "important");
+  }
+
+  function place(current, ranked) {
+    const same = ranked.every((row, index) => row.card === current[index]);
+    if (same) return false;
+    const markers = current.map((card) => {
+      const marker = document.createComment("przecena");
+      card.replaceWith(marker);
+      return marker;
     });
-    groups.forEach((hosts) => {
-      const original = hosts.slice().sort((a, b) => Number(a.dataset.allegroSeq) - Number(b.dataset.allegroSeq));
-      reorder(hosts, original);
+    ranked.forEach((row, index) => markers[index].replaceWith(row.card));
+    return true;
+  }
+
+  function restore() {
+    const cards = collectCards();
+    clearPaint(cards);
+    const groups = new Map();
+    cards.forEach((card) => {
+      const info = origin.get(card);
+      if (!info || !info.parent || !info.parent.isConnected) return;
+      if (!groups.has(info.parent)) groups.set(info.parent, []);
+      groups.get(info.parent).push(info);
+    });
+    groups.forEach((list, parent) => {
+      list.sort((a, b) => a.index - b.index);
+      list.forEach((info) => {
+        const ref = parent.children[info.index] || null;
+        if (info.card !== ref) parent.insertBefore(info.card, ref);
+      });
     });
   }
 
@@ -177,7 +182,7 @@
         text: summary.enabled && summary.max ? String(summary.max) : "",
       });
     } catch (error) {
-      /* popup bywa zamknięty, a worker jeszcze nie wstał */
+      /* worker może jeszcze spać */
     }
     return summary;
   }
@@ -189,42 +194,53 @@
       injectStyle();
       const cards = collectCards();
       if (!enabled) {
-        restoreOrder();
+        restore();
         return publish({ enabled: false, total: cards.length, marked: 0, max: 0 });
       }
+      const root = feedRoot(cards);
+      const inside = root ? cards.filter((card) => root.contains(card)) : [];
+      inside.forEach(remember);
+      const ranked = inside
+        .map((card) => ({
+          card: card,
+          seq: Number(card.dataset.allegroSeq) || 0,
+          percent: filter.discountFromText(cardText(card)),
+        }))
+        .sort((a, b) => b.percent - a.percent || a.seq - b.seq);
+      place(inside, ranked);
+      const parents = new Set();
+      ranked.forEach((row, index) => {
+        mark(row.card, row.percent);
+        row.card.style.setProperty("order", String(index + 1), "important");
+        if (row.card.parentElement) parents.add(row.card.parentElement);
+      });
+      parents.forEach((parent) => layoutParent(parent, ranked.map((row) => row.card)));
       let marked = 0;
       let max = 0;
-      clearBadges();
-      listingGroups(cards).forEach((group) => {
-        sortGroup(group).forEach((row) => {
-          if (row.percent > 0) marked += 1;
-          if (row.percent > max) max = row.percent;
-        });
+      ranked.forEach((row) => {
+        if (row.percent > 0) marked += 1;
+        if (row.percent > max) max = row.percent;
       });
-      return publish({ enabled: true, total: cards.length, marked: marked, max: max });
+      return publish({ enabled: enabled, total: inside.length, marked: marked, max: max });
     } finally {
       applying = false;
-      if (dirty) {
-        dirty = false;
-        schedule();
-      }
     }
   }
 
-  function schedule() {
-    window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(apply, 120);
+  function schedule(delay) {
+    const wait = typeof delay === "number" ? delay : 60;
+    window.setTimeout(apply, wait);
   }
 
   chrome.storage.local.get({ enabled: true }, (data) => {
     enabled = data.enabled !== false;
-    schedule();
+    schedule(0);
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.enabled) return;
     enabled = changes.enabled.newValue !== false;
-    schedule();
+    schedule(0);
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -235,15 +251,23 @@
   });
 
   const observer = new MutationObserver(() => {
-    if (!enabled) return;
-    if (applying) dirty = true;
-    else schedule();
+    if (!enabled || applying) return;
+    schedule(40);
   });
 
   function start() {
     injectStyle();
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    schedule();
+    window.addEventListener("scroll", () => schedule(30), true);
+    const tick = (time) => {
+      if (enabled && !applying && time >= nextPass) {
+        nextPass = time + 100;
+        apply();
+      }
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
+    schedule(0);
   }
 
   if (document.documentElement) start();
@@ -253,13 +277,13 @@
   const replace = history.replaceState;
   history.pushState = function () {
     const result = push.apply(this, arguments);
-    schedule();
+    schedule(0);
     return result;
   };
   history.replaceState = function () {
     const result = replace.apply(this, arguments);
-    schedule();
+    schedule(0);
     return result;
   };
-  window.addEventListener("popstate", schedule);
+  window.addEventListener("popstate", () => schedule(0));
 })();
