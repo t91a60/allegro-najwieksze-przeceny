@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Allegro: największe przeceny",
+  "version": "1.0.0",
+  "description": "Sortuje widoczne oferty Allegro od największej przeceny. Przydatne na Black Friday, gdzie Top nie oznacza największego rabatu.",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.allegro.pl/*", "*://allegro.pl/*"],
+  "action": {
+    "default_title": "Największe przeceny Allegro",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.allegro.pl/*", "*://allegro.pl/*"],
+      "js": ["filter.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
