@@ -6,20 +6,14 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header>
-      <h1>Największe przeceny</h1>
-      <p>Allegro · Black Friday i listy ofert</p>
-    </header>
-    <section class="row">
-      <div>
-        <span>Sortowanie</span>
-        <strong id="state">Włączone</strong>
-      </div>
-      <button id="toggle" type="button" role="switch" aria-checked="true" aria-label="Włącz sortowanie po przecenie">
-        <span></span>
-      </button>
-    </section>
-    <p class="stat" id="stat">Otwórz listę ofert na Allegro.</p>
+    <p class="kicker">Allegro</p>
+    <h1>Automatyczne sortowanie</h1>
+    <p class="lead">Od największej przeceny do najmniejszej.</p>
+    <div class="modes" role="group" aria-label="Automatyczne sortowanie od największej przeceny">
+      <button id="off" type="button">OFF</button>
+      <button id="on" type="button" aria-pressed="true">ON</button>
+    </div>
+    <p class="stat" id="stat">Sprawdzam listę ofert…</p>
     <script src="popup.js"></script>
   </body>
 </html>

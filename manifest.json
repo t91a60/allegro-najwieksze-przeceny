@@ -1,10 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Allegro: największe przeceny",
-  "version": "1.0.0",
-  "description": "Sortuje widoczne oferty Allegro od największej przeceny. Przydatne na Black Friday, gdzie Top nie oznacza największego rabatu.",
-  "permissions": ["storage"],
+  "version": "1.1.0",
+  "description": "Przełącznik ON/OFF. Po włączeniu automatycznie układa oferty Allegro od największej przeceny.",
+  "permissions": ["storage", "scripting"],
   "host_permissions": ["*://*.allegro.pl/*", "*://allegro.pl/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "Największe przeceny Allegro",
     "default_popup": "popup.html",

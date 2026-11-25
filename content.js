@@ -1,26 +1,23 @@
 (function () {
   "use strict";
 
+  if (globalThis.__allegroPrzecenaLoaded) return;
+  globalThis.__allegroPrzecenaLoaded = true;
+
   const filter = globalThis.AllegroPrzecena;
   const STYLE_ID = "allegro-przecena-style";
-  const BAR_ID = "allegro-przecena-bar";
   let enabled = true;
+  let seq = 0;
   let scanTimer = 0;
   let applying = false;
   let dirty = false;
+  let lastSummary = { enabled: true, total: 0, marked: 0, max: 0 };
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = [
-      "#" + BAR_ID + "{position:fixed;right:16px;bottom:16px;z-index:2147483646;",
-      "display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:999px;",
-      "background:#1c120b;color:#fff7f2;font:600 14px/1.2 Segoe UI,sans-serif;",
-      "box-shadow:0 10px 30px rgba(0,0,0,.28);}",
-      "#" + BAR_ID + " button{border:0;border-radius:999px;padding:8px 12px;cursor:pointer;",
-      "background:#ff5a00;color:#1c120b;font:700 14px/1 Segoe UI,sans-serif;}",
-      "#" + BAR_ID + " span{font-weight:500;color:#ffd7c2;}",
       "[data-allegro-przecena]{position:relative;}",
       "[data-allegro-przecena]::after{content:attr(data-allegro-przecena);position:absolute;",
       "top:8px;left:8px;z-index:5;padding:3px 7px;border-radius:999px;",
@@ -50,36 +47,36 @@
     offerLinks(document).forEach((anchor) => {
       const card = cardFromLink(anchor);
       if (!card || seen.has(card) || card === document.body || card === document.documentElement) return;
-      if (card.closest("#" + BAR_ID)) return;
-      const text = card.innerText || "";
+      const text = cardText(card);
       if (!/zł/i.test(text)) return;
       const box = card.getBoundingClientRect();
-      if (box.width < 80 || box.height < 60) return;
+      if (box.width < 80 || box.height < 40) return;
       seen.add(card);
       cards.push(card);
     });
     return cards.filter((card) => !cards.some((other) => other !== card && card.contains(other)));
   }
 
-  function clearMarks() {
-    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
-      card.removeAttribute("data-allegro-przecena");
+  function cardText(card) {
+    const bits = [card.innerText || ""];
+    card.querySelectorAll("[aria-label]").forEach((node) => {
+      bits.push(node.getAttribute("aria-label") || "");
     });
-    document.querySelectorAll("[data-allegro-order-host]").forEach((host) => {
-      host.style.order = "";
-      host.removeAttribute("data-allegro-order-host");
-    });
-  }
-
-  function mark(card, percent) {
-    if (percent > 0) card.setAttribute("data-allegro-przecena", "−" + percent + "%");
-    else card.removeAttribute("data-allegro-przecena");
+    return bits.join("\n");
   }
 
   function hostIn(parent, card) {
     let node = card;
     while (node.parentElement && node.parentElement !== parent) node = node.parentElement;
     return node.parentElement === parent ? node : null;
+  }
+
+  function stamp(host) {
+    if (!host.dataset.allegroSeq) {
+      seq += 1;
+      host.dataset.allegroSeq = String(seq);
+    }
+    return Number(host.dataset.allegroSeq);
   }
 
   function listingGroups(cards) {
@@ -104,7 +101,7 @@
           });
           if (ok && hosts.length >= 2) {
             inside.forEach((candidate) => used.add(candidate));
-            groups.push({ parent: node, hosts: hosts });
+            groups.push({ hosts: hosts });
             return;
           }
         }
@@ -114,86 +111,97 @@
     return groups;
   }
 
+  function mark(card, percent) {
+    if (percent > 0) card.setAttribute("data-allegro-przecena", "−" + percent + "%");
+    else card.removeAttribute("data-allegro-przecena");
+  }
+
+  function reorder(current, desired) {
+    const same = desired.every((host, index) => host === current[index]);
+    if (same) return;
+    const slots = current.map((host) => {
+      const marker = document.createComment("przecena");
+      host.replaceWith(marker);
+      return marker;
+    });
+    desired.forEach((host, index) => slots[index].replaceWith(host));
+  }
+
   function sortGroup(group) {
     const ranked = group.hosts
-      .map((entry, index) => ({
+      .map((entry) => ({
         host: entry.host,
         card: entry.card,
-        index: index,
-        percent: filter.discountFromText(entry.card.innerText || ""),
+        seq: stamp(entry.host),
+        percent: filter.discountFromText(cardText(entry.card)),
       }))
-      .sort((a, b) => b.percent - a.percent || a.index - b.index);
+      .sort((a, b) => b.percent - a.percent || a.seq - b.seq);
     ranked.forEach((row) => mark(row.card, row.percent));
-    const display = getComputedStyle(group.parent).display || "";
-    if (/flex|grid/.test(display)) {
-      ranked.forEach((row, index) => {
-        row.host.style.order = String(index + 1);
-        row.host.setAttribute("data-allegro-order-host", "1");
-      });
-      return ranked;
-    }
-    const current = group.hosts.map((entry) => entry.host);
-    const same = ranked.every((row, index) => row.host === current[index]);
-    if (!same) {
-      const slots = current.map((host) => {
-        const marker = document.createComment("przecena");
-        host.replaceWith(marker);
-        return marker;
-      });
-      ranked.forEach((row, index) => slots[index].replaceWith(row.host));
-    }
+    reorder(
+      group.hosts.map((entry) => entry.host),
+      ranked.map((row) => row.host),
+    );
     return ranked;
   }
 
-  function updateBar(summary) {
-    injectStyle();
-    let bar = document.getElementById(BAR_ID);
-    if (!bar) {
-      bar = document.createElement("div");
-      bar.id = BAR_ID;
-      bar.innerHTML = '<button type="button"></button><span></span>';
-      bar.querySelector("button").addEventListener("click", () => {
-        enabled = !enabled;
-        chrome.storage.local.set({ enabled: enabled });
-        apply();
+  function clearBadges() {
+    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
+      card.removeAttribute("data-allegro-przecena");
+    });
+    document.querySelectorAll("[data-allegro-order-host]").forEach((host) => {
+      host.style.order = "";
+      host.removeAttribute("data-allegro-order-host");
+    });
+  }
+
+  function restoreOrder() {
+    clearBadges();
+    const groups = new Map();
+    document.querySelectorAll("[data-allegro-seq]").forEach((host) => {
+      const parent = host.parentElement;
+      if (!parent) return;
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push(host);
+    });
+    groups.forEach((hosts) => {
+      const original = hosts.slice().sort((a, b) => Number(a.dataset.allegroSeq) - Number(b.dataset.allegroSeq));
+      reorder(hosts, original);
+    });
+  }
+
+  function publish(summary) {
+    lastSummary = summary;
+    try {
+      chrome.runtime.sendMessage({
+        type: "BADGE",
+        text: summary.enabled && summary.max ? String(summary.max) : "",
       });
-      document.documentElement.appendChild(bar);
+    } catch (error) {
+      /* popup bywa zamknięty, a worker jeszcze nie wstał */
     }
-    const button = bar.querySelector("button");
-    const meta = bar.querySelector("span");
-    button.textContent = enabled ? "Przecena: włączona" : "Przecena: wyłączona";
-    if (!summary.total) {
-      meta.textContent = "brak listy ofert";
-      return;
-    }
-    meta.textContent = enabled
-      ? summary.marked + " z " + summary.total + (summary.max ? " · max −" + summary.max + "%" : " · bez oznaczonej obniżki")
-      : summary.total + " ofert w kolejności Allegro";
+    return summary;
   }
 
   function apply() {
-    if (!filter || applying) return;
+    if (!filter || applying) return lastSummary;
     applying = true;
     try {
       injectStyle();
       const cards = collectCards();
       if (!enabled) {
-        clearMarks();
-        updateBar({ total: cards.length, marked: 0, max: 0 });
-        return { enabled: enabled, total: cards.length, marked: 0, max: 0 };
+        restoreOrder();
+        return publish({ enabled: false, total: cards.length, marked: 0, max: 0 });
       }
-      clearMarks();
       let marked = 0;
       let max = 0;
+      clearBadges();
       listingGroups(cards).forEach((group) => {
         sortGroup(group).forEach((row) => {
           if (row.percent > 0) marked += 1;
           if (row.percent > max) max = row.percent;
         });
       });
-      const summary = { enabled: true, total: cards.length, marked: marked, max: max };
-      updateBar(summary);
-      return summary;
+      return publish({ enabled: true, total: cards.length, marked: marked, max: max });
     } finally {
       applying = false;
       if (dirty) {
@@ -205,7 +213,7 @@
 
   function schedule() {
     window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(apply, 80);
+    scanTimer = window.setTimeout(apply, 120);
   }
 
   chrome.storage.local.get({ enabled: true }, (data) => {
@@ -220,12 +228,14 @@
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "GET_STATE") return;
-    const summary = apply() || { enabled: enabled, total: 0, marked: 0, max: 0 };
-    sendResponse(summary);
+    if (!message) return;
+    if (message.type === "SET_ENABLED") enabled = message.enabled !== false;
+    if (message.type !== "GET_STATE" && message.type !== "SET_ENABLED") return;
+    sendResponse(apply());
   });
 
   const observer = new MutationObserver(() => {
+    if (!enabled) return;
     if (applying) dirty = true;
     else schedule();
   });

@@ -19,13 +19,17 @@
   }
 
   function lineIsNoise(line) {
-    return /dostaw|przesyl|wysyl|z dostawa|raty|\/mc|\/mies|cashback|zwrot|kupon|klik|punkt|smart!?$|rrso|prowiz|w zestawie z dostawa/.test(
+    return /dostaw|przesyl|wysyl|z dostawa|raty|\/mc|\/mies|cashback|zwrot|kupon|klik|punkt|smart!?$|rrso|prowiz|oszczedz|w zestawie z dostawa/.test(
       fold(line),
     );
   }
 
+  function normalize(text) {
+    return String(text || "").replace(/(\d[\d \u00a0]*(?:,\d{2})?)\s*\n+\s*zł/gi, "$1 zł");
+  }
+
   function discountFromText(text) {
-    const lines = String(text || "")
+    const lines = normalize(text)
       .split(/\n+/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -37,8 +41,12 @@
       const folded = fold(line);
       const isCeiling = /\b(do|nawet|az|max|maksymalnie)\s+\d{1,2}\s*%/.test(folded);
       const badge = line.match(/[-−–]\s*(\d{1,2})\s*%/);
-      if (badge && !isCeiling) {
+      const spoken = folded.match(/obnizk\w*\s+(\d{1,2})\s*(?:%|procent)/);
+      if (!isCeiling && badge) {
         const value = Number(badge[1]);
+        if (value >= 1 && value <= 90) percents.push(value);
+      } else if (!isCeiling && spoken) {
+        const value = Number(spoken[1]);
         if (value >= 1 && value <= 90) percents.push(value);
       } else if (/^(\d{1,2})\s*%$/.test(line)) {
         const value = Number(line.match(/^(\d{1,2})/)[1]);
