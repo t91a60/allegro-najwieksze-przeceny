@@ -6,23 +6,17 @@
 
   const filter = globalThis.AllegroPrzecena;
   const STYLE_ID = "allegro-przecena-style";
-  const origin = new WeakMap();
   let enabled = true;
-  let seq = 0;
   let applying = false;
+  let scanTimer = 0;
   let lastSummary = { enabled: true, total: 0, marked: 0, max: 0 };
-  let nextPass = 0;
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = [
-      "[data-allegro-przecena]{position:relative;}",
-      "[data-allegro-przecena]::after{content:attr(data-allegro-przecena);position:absolute;",
-      "top:8px;left:8px;z-index:5;padding:3px 7px;border-radius:999px;",
-      "background:#ff5a00;color:#1c120b;font:800 12px/1.2 Segoe UI,sans-serif;",
-      "pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25);}",
+      "[data-allegro-przecena]{outline:2px solid #ff5a00;outline-offset:-2px;}",
     ].join("");
     (document.head || document.documentElement).appendChild(style);
   }
@@ -31,22 +25,33 @@
     return root.querySelectorAll('a[href*="/oferta/"], a[href*="/produkt/"]');
   }
 
+  function isReasonableCard(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const box = el.getBoundingClientRect();
+    if (box.width < 90 || box.height < 50) return false;
+    if (box.width > window.innerWidth * 0.92 && box.height > window.innerHeight * 0.45) return false;
+    if (box.height > 900) return false;
+    return true;
+  }
+
   function cardFromLink(anchor) {
     let node = anchor;
-    for (let depth = 0; depth < 12 && node.parentElement; depth += 1) {
+    for (let depth = 0; depth < 8 && node.parentElement; depth += 1) {
       const parent = node.parentElement;
-      if (offerLinks(parent).length > 1) return node;
+      const links = offerLinks(parent);
+      if (links.length > 1) {
+        if (offerLinks(node).length <= 2 && isReasonableCard(node)) return node;
+        return null;
+      }
       node = parent;
     }
-    return anchor.closest("article") || anchor;
+    const article = anchor.closest("article");
+    if (article && offerLinks(article).length <= 2 && isReasonableCard(article)) return article;
+    return null;
   }
 
   function cardText(card) {
-    const bits = [card.innerText || "", card.textContent || ""];
-    card.querySelectorAll("[aria-label], img[alt]").forEach((node) => {
-      bits.push(node.getAttribute("aria-label") || node.getAttribute("alt") || "");
-    });
-    return bits.join("\n");
+    return card.innerText || "";
   }
 
   function collectCards() {
@@ -54,123 +59,34 @@
     const cards = [];
     offerLinks(document).forEach((anchor) => {
       const card = cardFromLink(anchor);
-      if (!card || seen.has(card) || card === document.body || card === document.documentElement) return;
+      if (!card || seen.has(card)) return;
       if (!/zł/i.test(cardText(card))) return;
-      if (card.offsetWidth === 0 && card.offsetHeight === 0) return;
       seen.add(card);
       cards.push(card);
     });
     return cards.filter((card) => !cards.some((other) => other !== card && card.contains(other)));
   }
 
-  function depthOf(node) {
-    let depth = 0;
-    let current = node;
-    while (current && current.parentElement) {
-      depth += 1;
-      current = current.parentElement;
+  function gridItem(card) {
+    let node = card;
+    while (node.parentElement && node !== document.body) {
+      const display = getComputedStyle(node.parentElement).display || "";
+      if (display.indexOf("flex") !== -1 || display.indexOf("grid") !== -1) {
+        if (!isReasonableCard(node) && node !== card) return null;
+        return { parent: node.parentElement, item: node };
+      }
+      node = node.parentElement;
     }
-    return depth;
+    return null;
   }
 
-  function feedRoot(cards) {
-    const counts = new Map();
-    cards.forEach((card) => {
-      let node = card.parentElement;
-      while (node && node !== document.documentElement) {
-        counts.set(node, (counts.get(node) || 0) + 1);
-        node = node.parentElement;
-      }
+  function clearOrder() {
+    document.querySelectorAll("[data-allegro-order]").forEach((item) => {
+      item.style.removeProperty("order");
+      item.removeAttribute("data-allegro-order");
     });
-    let best = null;
-    let bestCount = 0;
-    let bestDepth = -1;
-    counts.forEach((count, node) => {
-      if (count < 2) return;
-      const depth = depthOf(node);
-      if (count > bestCount || (count === bestCount && depth > bestDepth)) {
-        best = node;
-        bestCount = count;
-        bestDepth = depth;
-      }
-    });
-    return best;
-  }
-
-  function remember(card) {
-    if (card.dataset.allegroSeq) return;
-    const parent = card.parentElement;
-    seq += 1;
-    card.dataset.allegroSeq = String(seq);
-    origin.set(card, {
-      parent: parent,
-      index: parent ? Array.prototype.indexOf.call(parent.children, card) : 0,
-    });
-  }
-
-  function mark(card, percent) {
-    if (percent > 0) card.setAttribute("data-allegro-przecena", "−" + percent + "%");
-    else card.removeAttribute("data-allegro-przecena");
-  }
-
-  function clearPaint(cards) {
-    cards.forEach((card) => {
-      card.style.removeProperty("order");
+    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
       card.removeAttribute("data-allegro-przecena");
-    });
-    document.querySelectorAll("[data-allegro-display-saved]").forEach((parent) => {
-      parent.style.removeProperty("display");
-      parent.style.removeProperty("flex-wrap");
-      parent.style.removeProperty("align-items");
-      if (parent.dataset.allegroDisplay) parent.style.display = parent.dataset.allegroDisplay;
-      delete parent.dataset.allegroDisplay;
-      delete parent.dataset.allegroDisplaySaved;
-    });
-  }
-
-  function layoutParent(parent, cards) {
-    if (!parent) return;
-    const display = getComputedStyle(parent).display || "";
-    if (/flex|grid/.test(display)) return;
-    const kids = Array.prototype.filter.call(parent.children, (child) => cards.indexOf(child) !== -1);
-    if (kids.length < 2 || kids.length < parent.children.length * 0.4) return;
-    if (!parent.dataset.allegroDisplaySaved) {
-      parent.dataset.allegroDisplaySaved = "1";
-      parent.dataset.allegroDisplay = parent.style.display || "";
-    }
-    parent.style.setProperty("display", "flex", "important");
-    parent.style.setProperty("flex-wrap", "wrap", "important");
-    parent.style.setProperty("align-items", "stretch", "important");
-  }
-
-  function place(current, ranked) {
-    const same = ranked.every((row, index) => row.card === current[index]);
-    if (same) return false;
-    const markers = current.map((card) => {
-      const marker = document.createComment("przecena");
-      card.replaceWith(marker);
-      return marker;
-    });
-    ranked.forEach((row, index) => markers[index].replaceWith(row.card));
-    return true;
-  }
-
-  function restore() {
-    const cards = collectCards();
-    clearPaint(cards);
-    const groups = new Map();
-    cards.forEach((card) => {
-      const info = origin.get(card);
-      if (!info || !info.parent || !info.parent.isConnected) return;
-      if (!groups.has(info.parent)) groups.set(info.parent, []);
-      groups.get(info.parent).push(info);
-    });
-    groups.forEach((list, parent) => {
-      list.sort((a, b) => a.index - b.index);
-      list.forEach((info) => {
-        const ref = parent.children[info.index] || null;
-        if (info.card !== ref) parent.insertBefore(info.card, ref);
-      });
     });
   }
 
@@ -192,55 +108,60 @@
     applying = true;
     try {
       injectStyle();
-      const cards = collectCards();
       if (!enabled) {
-        restore();
-        return publish({ enabled: false, total: cards.length, marked: 0, max: 0 });
+        clearOrder();
+        return publish({ enabled: false, total: 0, marked: 0, max: 0 });
       }
-      const root = feedRoot(cards);
-      const inside = root ? cards.filter((card) => root.contains(card)) : [];
-      inside.forEach(remember);
-      const ranked = inside
-        .map((card) => ({
-          card: card,
-          seq: Number(card.dataset.allegroSeq) || 0,
-          percent: filter.discountFromText(cardText(card)),
-        }))
-        .sort((a, b) => b.percent - a.percent || a.seq - b.seq);
-      place(inside, ranked);
-      const parents = new Set();
-      ranked.forEach((row, index) => {
-        mark(row.card, row.percent);
-        row.card.style.setProperty("order", String(index + 1), "important");
-        if (row.card.parentElement) parents.add(row.card.parentElement);
+      const cards = collectCards();
+      const groups = new Map();
+      cards.forEach((card) => {
+        const placed = gridItem(card);
+        if (!placed) return;
+        if (!groups.has(placed.parent)) groups.set(placed.parent, []);
+        groups.get(placed.parent).push({ card: card, item: placed.item });
       });
-      parents.forEach((parent) => layoutParent(parent, ranked.map((row) => row.card)));
       let marked = 0;
       let max = 0;
-      ranked.forEach((row) => {
-        if (row.percent > 0) marked += 1;
-        if (row.percent > max) max = row.percent;
+      let total = 0;
+      groups.forEach((entries) => {
+        if (entries.length < 2) return;
+        const ranked = entries
+          .map((entry, index) => ({
+            entry: entry,
+            index: index,
+            percent: filter.discountFromText(cardText(entry.card)),
+          }))
+          .sort((a, b) => b.percent - a.percent || a.index - b.index);
+        ranked.forEach((row, index) => {
+          total += 1;
+          if (row.percent > 0) marked += 1;
+          if (row.percent > max) max = row.percent;
+          row.entry.item.style.order = String(index + 1);
+          row.entry.item.setAttribute("data-allegro-order", "1");
+          if (row.percent > 0) row.entry.card.setAttribute("data-allegro-przecena", "−" + row.percent + "%");
+          else row.entry.card.removeAttribute("data-allegro-przecena");
+        });
       });
-      return publish({ enabled: enabled, total: inside.length, marked: marked, max: max });
+      return publish({ enabled: true, total: total, marked: marked, max: max });
     } finally {
       applying = false;
     }
   }
 
-  function schedule(delay) {
-    const wait = typeof delay === "number" ? delay : 60;
-    window.setTimeout(apply, wait);
+  function schedule() {
+    window.clearTimeout(scanTimer);
+    scanTimer = window.setTimeout(apply, 250);
   }
 
   chrome.storage.local.get({ enabled: true }, (data) => {
     enabled = data.enabled !== false;
-    schedule(0);
+    schedule();
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.enabled) return;
     enabled = changes.enabled.newValue !== false;
-    schedule(0);
+    schedule();
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -252,22 +173,13 @@
 
   const observer = new MutationObserver(() => {
     if (!enabled || applying) return;
-    schedule(40);
+    schedule();
   });
 
   function start() {
     injectStyle();
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener("scroll", () => schedule(30), true);
-    const tick = (time) => {
-      if (enabled && !applying && time >= nextPass) {
-        nextPass = time + 100;
-        apply();
-      }
-      window.requestAnimationFrame(tick);
-    };
-    window.requestAnimationFrame(tick);
-    schedule(0);
+    schedule();
   }
 
   if (document.documentElement) start();
@@ -277,13 +189,13 @@
   const replace = history.replaceState;
   history.pushState = function () {
     const result = push.apply(this, arguments);
-    schedule(0);
+    schedule();
     return result;
   };
   history.replaceState = function () {
     const result = replace.apply(this, arguments);
-    schedule(0);
+    schedule();
     return result;
   };
-  window.addEventListener("popstate", () => schedule(0));
+  window.addEventListener("popstate", schedule);
 })();

@@ -2,7 +2,7 @@
 
 Wtyczka Chrome (Manifest V3). W ikonie wtyczki jest przełącznik **ON/OFF**.
 
-- **ON** — oferty na otwartej liście same układają się od największej przeceny. Działa dalej przy przewijaniu i przejściu na kolejną stronę.
+- **ON** — oferty na otwartej liście same układają się od największej przeceny. Działa dalej przy przewijaniu i przejściu na kolejną stronę. Nie rusza struktury strony, więc kliknięcia zostają na właściwych kartach.
 - **OFF** — wraca kolejność Allegro.
 
 Procent jest brany z plakietki `−NN%` albo z różnicy ceny i ceny przekreślonej. Dostawa, raty, cashback i hasła „do 50%” nie liczą się jako przecena tej oferty.
