@@ -6,16 +6,22 @@
 
   const filter = globalThis.AllegroPrzecena;
   const STYLE_ID = "allegro-przecena-style";
+  const BOARD_ID = "allegro-przecena-board";
+  const origin = new WeakMap();
   let enabled = true;
   let applying = false;
   let scanTimer = 0;
+  let homeSeq = 0;
   let lastSummary = { enabled: true, total: 0, marked: 0, max: 0 };
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "[data-allegro-przecena]{box-shadow:inset 0 0 0 3px #ff5a00;}";
+    style.textContent = [
+      "#" + BOARD_ID + "{display:flex !important;flex-wrap:wrap !important;align-items:flex-start !important;align-content:flex-start !important;width:100%;gap:12px;}",
+      "[data-allegro-przecena]{box-shadow:inset 0 0 0 3px #ff5a00;}",
+    ].join("");
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -25,48 +31,44 @@
     );
   }
 
-  function displayOf(el) {
-    return (el && getComputedStyle(el).display) || "";
-  }
-
-  function realParent(el) {
-    let parent = el.parentElement;
-    while (parent && displayOf(parent) === "contents") parent = parent.parentElement;
-    return parent;
-  }
-
-  function slotOf(container, card) {
-    let node = card;
-    while (node && realParent(node) !== container) node = node.parentElement;
-    return node && realParent(node) === container ? node : null;
-  }
-
-  function boxOf(el) {
-    return el.getBoundingClientRect();
-  }
-
-  function isHuge(el) {
-    const box = boxOf(el);
-    if (box.height > 1100) return true;
-    if (box.width > window.innerWidth * 0.98 && box.height > window.innerHeight * 0.45) return true;
+  function inCarousel(el) {
+    let node = el;
+    while (node && node !== document.body) {
+      const name = (node.getAttribute && node.getAttribute("data-box-name")) || "";
+      if (/carousel|slider|reco/i.test(name)) return true;
+      const style = getComputedStyle(node);
+      if ((style.overflowX === "auto" || style.overflowX === "scroll") && node.scrollWidth > node.clientWidth + 48) {
+        return true;
+      }
+      node = node.parentElement;
+    }
     return false;
   }
 
-  function isCard(el) {
+  function isHuge(el) {
+    const box = el.getBoundingClientRect();
+    if (box.height > 1100) return true;
+    if (box.width > window.innerWidth * 0.98 && box.height > window.innerHeight * 0.4) return true;
+    return false;
+  }
+
+  function looksLikeCard(el) {
     if (!el || el === document.body || el === document.documentElement) return false;
+    if (el.id === BOARD_ID) return false;
+    if (el.matches("a, script, style, link")) return false;
     if (isHuge(el)) return false;
-    const box = boxOf(el);
-    if (box.width < 80 || box.height < 40) return false;
-    if (box.width > window.innerWidth * 0.98) return false;
-    return true;
+    const box = el.getBoundingClientRect();
+    if (box.width >= 80 && box.height >= 36 && box.height < 1000 && box.width <= window.innerWidth * 0.98) return true;
+    if (box.width === 0 && box.height === 0 && offerLinks(el).length > 0 && /zł/i.test(el.innerText || "")) return true;
+    return false;
   }
 
   function cardFromLink(anchor) {
     let node = anchor;
-    for (let depth = 0; depth < 14 && node.parentElement; depth += 1) {
+    for (let depth = 0; depth < 16 && node.parentElement; depth += 1) {
       const parent = node.parentElement;
-      const nodeLinks = offerLinks(node).length + (node.matches && node.matches("a[href]") ? 1 : 0);
-      if (offerLinks(parent).length > nodeLinks && isCard(node)) return node;
+      const nodeLinks = offerLinks(node).length + (node.matches("a[href]") ? 1 : 0);
+      if (offerLinks(parent).length > nodeLinks && looksLikeCard(node)) return node;
       node = parent;
     }
     return null;
@@ -76,8 +78,9 @@
     const seen = new Set();
     const cards = [];
     offerLinks(document).forEach((anchor) => {
+      if (inCarousel(anchor)) return;
       const card = cardFromLink(anchor);
-      if (!card || seen.has(card)) return;
+      if (!card || seen.has(card) || inCarousel(card)) return;
       if (!/zł/i.test(card.innerText || "")) return;
       seen.add(card);
       cards.push(card);
@@ -85,86 +88,103 @@
     return cards.filter((card) => !cards.some((other) => other !== card && card.contains(other)));
   }
 
-  function groupsOf(cards) {
-    const seen = new Set();
-    const groups = [];
+  function depthOf(node) {
+    let depth = 0;
+    let current = node;
+    while (current && current.parentElement) {
+      depth += 1;
+      current = current.parentElement;
+    }
+    return depth;
+  }
+
+  function feedRoot(cards) {
+    const counts = new Map();
     cards.forEach((card) => {
-      let node = realParent(card);
+      let node = card.parentElement;
       while (node && node !== document.body && node !== document.documentElement) {
-        if (!seen.has(node)) {
-          seen.add(node);
-          const pairs = [];
-          const used = new Set();
-          let ok = true;
-          cards.forEach((candidate) => {
-            if (!ok || !node.contains(candidate)) return;
-            const slot = slotOf(node, candidate);
-            if (!slot || used.has(slot) || isHuge(slot)) {
-              ok = false;
-              return;
-            }
-            used.add(slot);
-            pairs.push({ slot: slot, card: candidate });
-          });
-          if (ok && pairs.length >= 2) groups.push({ parent: node, pairs: pairs });
+        if (node.id === BOARD_ID) {
+          node = node.parentElement;
+          continue;
         }
-        node = realParent(node);
+        counts.set(node, (counts.get(node) || 0) + 1);
+        node = node.parentElement;
       }
     });
-    groups.sort((a, b) => b.pairs.length - a.pairs.length);
-    const kept = [];
-    groups.forEach((group) => {
-      if (kept.some((other) => other.parent.contains(group.parent) || group.parent.contains(other.parent))) return;
-      kept.push(group);
+    let best = null;
+    let bestCount = 0;
+    let bestDepth = -1;
+    counts.forEach((count, node) => {
+      const depth = depthOf(node);
+      if (count > bestCount || (count === bestCount && depth > bestDepth)) {
+        best = node;
+        bestCount = count;
+        bestDepth = depth;
+      }
     });
-    return kept;
+    return best;
   }
 
-  function clearMarks() {
-    document.querySelectorAll("[data-allegro-order]").forEach((slot) => {
-      slot.style.removeProperty("order");
-      slot.style.removeProperty("flex");
-      slot.style.removeProperty("width");
-      slot.style.removeProperty("max-width");
-      slot.removeAttribute("data-allegro-order");
-    });
-    document.querySelectorAll("[data-allegro-flex]").forEach((parent) => {
-      parent.style.removeProperty("display");
-      parent.style.removeProperty("flex-wrap");
-      parent.style.removeProperty("align-items");
-      parent.removeAttribute("data-allegro-flex");
-    });
-    document.querySelectorAll("[data-allegro-przecena]").forEach((card) => {
-      card.removeAttribute("data-allegro-przecena");
-    });
+  function remember(card) {
+    if (origin.has(card) || !card.parentElement || card.parentElement.id === BOARD_ID) return;
+    homeSeq += 1;
+    card.dataset.allegroSeq = String(homeSeq);
+    origin.set(card, card.parentElement);
   }
 
-  function layout(group, ranked) {
-    const parent = group.parent;
-    const display = displayOf(parent);
-    const canOrder = /flex|grid/.test(display) || parent.hasAttribute("data-allegro-flex");
-    if (!canOrder) {
-      const kids = parent.children.length || 1;
-      if (ranked.length / kids < 0.55) return;
-      parent.setAttribute("data-allegro-flex", "1");
-      parent.style.setProperty("display", "flex", "important");
-      parent.style.setProperty("flex-wrap", "wrap", "important");
-      parent.style.setProperty("align-items", "flex-start", "important");
-      ranked.forEach((row) => {
-        const width = Math.round(boxOf(row.slot).width);
-        if (width < 80 || width > window.innerWidth * 0.96) return;
-        const basis = width + "px";
-        row.slot.style.setProperty("flex", "0 0 " + basis, "important");
-        row.slot.style.setProperty("width", basis, "important");
-        row.slot.style.setProperty("max-width", basis, "important");
-      });
+  function lockWidth(card) {
+    if (card.dataset.allegroW) return;
+    const width = Math.round(card.getBoundingClientRect().width);
+    if (width >= 80 && width <= window.innerWidth * 0.96) card.dataset.allegroW = String(width);
+  }
+
+  function applyWidth(card) {
+    const width = Number(card.dataset.allegroW);
+    if (!width) return;
+    const basis = width + "px";
+    card.style.setProperty("flex", "0 0 " + basis, "important");
+    card.style.setProperty("width", basis, "important");
+    card.style.setProperty("max-width", "100%", "important");
+  }
+
+  function ensureBoard(root, cards) {
+    let board = document.getElementById(BOARD_ID);
+    if (!board) {
+      board = document.createElement("div");
+      board.id = BOARD_ID;
     }
-    ranked.forEach((row, index) => {
-      row.slot.style.setProperty("order", String(index + 1), "important");
-      row.slot.setAttribute("data-allegro-order", "1");
-      if (row.percent > 0) row.card.setAttribute("data-allegro-przecena", "−" + row.percent + "%");
-      else row.card.removeAttribute("data-allegro-przecena");
+    if (board.parentElement !== root) {
+      const anchor = cards.find((card) => root.contains(card) && !board.contains(card));
+      if (anchor) anchor.parentElement.insertBefore(board, anchor);
+      else root.insertBefore(board, root.firstChild);
+    }
+    return board;
+  }
+
+  function clearCard(card) {
+    card.style.removeProperty("flex");
+    card.style.removeProperty("width");
+    card.style.removeProperty("max-width");
+    card.style.removeProperty("order");
+    card.removeAttribute("data-allegro-przecena");
+  }
+
+  function restore() {
+    const cards = collectCards();
+    const groups = new Map();
+    cards.forEach((card) => {
+      clearCard(card);
+      const parent = origin.get(card);
+      if (!parent || !parent.isConnected) return;
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push(card);
     });
+    groups.forEach((list, parent) => {
+      list.sort((a, b) => Number(a.dataset.allegroSeq) - Number(b.dataset.allegroSeq));
+      list.forEach((card) => parent.appendChild(card));
+    });
+    const board = document.getElementById(BOARD_ID);
+    if (board) board.remove();
   }
 
   function publish(summary) {
@@ -185,30 +205,43 @@
     applying = true;
     try {
       injectStyle();
+      const cards = collectCards();
       if (!enabled) {
-        clearMarks();
-        return publish({ enabled: false, total: 0, marked: 0, max: 0 });
+        restore();
+        return publish({ enabled: false, total: cards.length, marked: 0, max: 0 });
       }
+      const root = feedRoot(cards);
+      if (!root) return publish({ enabled: true, total: 0, marked: 0, max: 0 });
+      const inside = cards.filter((card) => root.contains(card) || card.parentElement?.id === BOARD_ID);
+      if (inside.length < 2) return publish({ enabled: true, total: inside.length, marked: 0, max: 0 });
+      inside.forEach((card) => {
+        remember(card);
+        lockWidth(card);
+      });
+      const board = ensureBoard(root, inside);
+      const ranked = inside
+        .map((card, index) => ({
+          card: card,
+          index: index,
+          percent: filter.discountFromText(card.innerText || ""),
+        }))
+        .sort((a, b) => b.percent - a.percent || a.index - b.index);
+      const placed = ranked.map((row) => row.card);
+      const sameParent = placed.every((card) => card.parentElement === board);
+      const sameOrder = sameParent && placed.every((card, index) => board.children[index] === card);
+      if (!sameOrder) placed.forEach((card) => board.appendChild(card));
       let marked = 0;
       let max = 0;
-      let total = 0;
-      groupsOf(collectCards()).forEach((group) => {
-        const ranked = group.pairs
-          .map((pair, index) => ({
-            slot: pair.slot,
-            card: pair.card,
-            index: index,
-            percent: filter.discountFromText(pair.card.innerText || ""),
-          }))
-          .sort((a, b) => b.percent - a.percent || a.index - b.index);
-        layout(group, ranked);
-        ranked.forEach((row) => {
-          total += 1;
-          if (row.percent > 0) marked += 1;
-          if (row.percent > max) max = row.percent;
-        });
+      ranked.forEach((row, index) => {
+        applyWidth(row.card);
+        row.card.style.setProperty("order", String(index + 1), "important");
+        if (row.percent > 0) {
+          marked += 1;
+          row.card.setAttribute("data-allegro-przecena", "−" + row.percent + "%");
+        } else row.card.removeAttribute("data-allegro-przecena");
+        if (row.percent > max) max = row.percent;
       });
-      return publish({ enabled: true, total: total, marked: marked, max: max });
+      return publish({ enabled: true, total: ranked.length, marked: marked, max: max });
     } finally {
       applying = false;
     }
@@ -216,7 +249,7 @@
 
   function schedule() {
     window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(apply, 180);
+    scanTimer = window.setTimeout(apply, 120);
   }
 
   chrome.storage.local.get({ enabled: true }, (data) => {
@@ -237,17 +270,20 @@
     sendResponse(apply());
   });
 
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver((records) => {
     if (!enabled || applying) return;
+    const added = records.some((record) => record.addedNodes && record.addedNodes.length);
+    if (!added) return;
     schedule();
   });
 
   function start() {
     injectStyle();
     observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener("scroll", schedule, { passive: true });
     window.setInterval(() => {
       if (enabled && !applying) apply();
-    }, 500);
+    }, 400);
     schedule();
   }
 
