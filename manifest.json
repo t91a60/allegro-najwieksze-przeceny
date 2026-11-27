@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Allegro: największe przeceny",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Przełącznik ON/OFF. Po włączeniu automatycznie układa oferty Allegro od największej przeceny.",
   "permissions": ["storage", "scripting"],
   "host_permissions": ["*://*.allegro.pl/*", "*://allegro.pl/*"],

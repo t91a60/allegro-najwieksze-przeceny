@@ -147,6 +147,27 @@
     card.style.setProperty("max-width", "100%", "important");
   }
 
+  function overlayContained(card) {
+    if (!card || card.matches("a")) return false;
+    const anchors = card.querySelectorAll("a");
+    for (let i = 0; i < anchors.length; i += 1) {
+      const anchor = anchors[i];
+      const pos = getComputedStyle(anchor).position;
+      if (pos !== "absolute" && pos !== "fixed") continue;
+      let node = anchor.parentElement;
+      let contained = false;
+      while (node && node !== card.parentElement) {
+        if (getComputedStyle(node).position !== "static") {
+          contained = card === node || card.contains(node);
+          break;
+        }
+        node = node.parentElement;
+      }
+      if (!contained) return false;
+    }
+    return true;
+  }
+
   function ensureBoard(root, cards) {
     let board = document.getElementById(BOARD_ID);
     if (!board) {
@@ -226,13 +247,19 @@
           percent: filter.discountFromText(card.innerText || ""),
         }))
         .sort((a, b) => b.percent - a.percent || a.index - b.index);
-      const placed = ranked.map((row) => row.card);
-      const sameParent = placed.every((card) => card.parentElement === board);
-      const sameOrder = sameParent && placed.every((card, index) => board.children[index] === card);
+      const movable = ranked.filter(
+        (row) => row.card.parentElement === board || overlayContained(row.card),
+      );
+      const placed = movable.map((row) => row.card);
+      const sameOrder =
+        placed.length > 0 &&
+        placed.every((card) => card.parentElement === board) &&
+        placed.every((card, index) => board.children[index] === card);
       if (!sameOrder) placed.forEach((card) => board.appendChild(card));
       let marked = 0;
       let max = 0;
       ranked.forEach((row, index) => {
+        if (row.card.parentElement !== board) return;
         applyWidth(row.card);
         row.card.style.setProperty("order", String(index + 1), "important");
         if (row.percent > 0) {
